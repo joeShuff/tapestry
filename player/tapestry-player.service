@@ -1,0 +1,14 @@
+[Unit]
+Description=Tapestry player
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/tapestry/player
+ExecStart=/home/pi/tapestry/player/.venv/bin/python -m tapestry_player --config /home/pi/tapestry/player/config.toml
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+
+server/data/
+
+*.pyc
+
+.idea/
