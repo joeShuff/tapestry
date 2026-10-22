@@ -35,7 +35,8 @@ class MpvPlayer:
         self.command("set_property", "pause", False)
 
     def stop(self) -> None:
-        self.command("stop")
+        if self.proc and self.proc.poll() is None:  # never start mpv just to stop it
+            self.command("stop")
 
     def position(self) -> float | None:
         reply = self.command("get_property", "time-pos")
@@ -87,7 +88,10 @@ class MpvPlayer:
         elif self.device != "auto":
             args.append(f"--audio-device={self.device}")
         log.info("Starting mpv")
-        self.proc = subprocess.Popen(args)
+        try:
+            self.proc = subprocess.Popen(args)
+        except FileNotFoundError:
+            raise RuntimeError("mpv is not installed. Run: sudo apt install mpv") from None
 
     def _connect(self) -> None:
         deadline = time.time() + 5

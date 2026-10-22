@@ -1,6 +1,7 @@
 """Entry point: python -m tapestry_player [--config config.toml] [--reader stdin]"""
 import argparse
 import logging
+import shutil
 import signal
 
 from .audio import MpvPlayer
@@ -19,6 +20,9 @@ def main() -> None:
     args = ap.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    if not shutil.which("mpv"):
+        raise SystemExit("mpv is not installed. Run: sudo apt install mpv")
 
     cfg = load_config(args.config)
     cfg.reader = args.reader or cfg.reader

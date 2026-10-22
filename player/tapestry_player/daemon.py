@@ -56,8 +56,9 @@ class Daemon:
         path = self.library.resolve(uid)
         if path is None:
             log.info("No audio for %s. Assign it in the portal's Waiting tab.", uid)
-            self.player.stop()
-            self.loaded = None
+            if self.loaded:
+                self.player.stop()
+                self.loaded = None
             return
         self.player.play(path, max(0.0, self.positions.get(uid) - 2))  # back up 2s for context
         self.loaded, self.started = uid, time.monotonic()
