@@ -3,6 +3,8 @@ import hashlib
 import json
 import logging
 import os
+import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 import requests
@@ -16,6 +18,13 @@ class ServerUnavailable(Exception):
 
 class DownloadError(Exception):
     pass
+
+
+@dataclass
+class Refresh:
+    status: str                  # "ok", "unknown" (server doesn't know the card), "offline" or "error"
+    path: Path | None = None     # the audio to use, if there is any
+    changed: bool = False        # the card now maps to different audio than the cache had
 
 
 class ServerClient:
@@ -59,29 +68,40 @@ class ServerClient:
 
 
 class Library:
-    """Maps card IDs to cached audio files. Files are stored by hash, so identical audio is stored once."""
+    """Maps card IDs to cached audio files. Files are stored by hash, so identical audio is stored once.
+
+    `cached()` is instant and local. `refresh()` talks to the server and can be slow, so run it off the
+    main thread.
+    """
 
     def __init__(self, client: ServerClient, data_dir: Path):
         self.client = client
         self.audio_dir = data_dir / "audio"
         self.audio_dir.mkdir(parents=True, exist_ok=True)
         self.index_path = data_dir / "index.json"
+        self._lock = threading.Lock()
         try:
             self.index = json.loads(self.index_path.read_text())
         except (FileNotFoundError, json.JSONDecodeError):
             self.index = {}
 
-    def resolve(self, uid: str) -> Path | None:
-        """Path to this card's audio (downloading it if new or changed), or None if unknown."""
-        cached = self._cached(self.index.get(uid))
+    def cached(self, uid: str) -> Path | None:
+        """This card's audio if we already have it on disk."""
+        entry = self.index.get(uid)
+        path = self.audio_dir / entry["path"] if entry else None
+        return path if path and path.exists() else None
+
+    def refresh(self, uid: str) -> Refresh:
+        """Ask the server what this card plays and download it if it's new or changed."""
+        old = self.cached(uid)
         try:
             info = self.client.lookup(uid)
         except ServerUnavailable as e:
-            log.warning("Server unreachable (%s); using cache", e)
-            return cached
+            log.warning("Server unreachable (%s)", e)
+            return Refresh("offline", old)
         if info is None:
-            self._forget(uid)
-            return None
+            self._update(uid, None)
+            return Refresh("unknown")
         file = info["file"]
         path = self.audio_dir / (file["sha256"] + Path(file["filename"]).suffix.lower())
         if not path.exists():
@@ -89,25 +109,26 @@ class Library:
             try:
                 self.client.download(file["download_url"], path, file["sha256"])
             except ServerUnavailable as e:
-                log.warning("Download failed (%s); using cached copy if any", e)
-                return cached
-        self.index[uid] = {"title": file["title"], "path": path.name}
-        self._save()
-        return path
+                log.warning("Download failed (%s)", e)
+                return Refresh("offline", old)
+            except DownloadError as e:
+                log.warning("%s", e)
+                return Refresh("error", old)
+        self._update(uid, {"title": file["title"], "path": path.name})
+        return Refresh("ok", path, changed=old is not None and old != path)
 
-    def _cached(self, entry: dict | None) -> Path | None:
-        path = self.audio_dir / entry["path"] if entry else None
-        return path if path and path.exists() else None
-
-    def _forget(self, uid: str) -> None:
-        if self.index.pop(uid, None) is not None:
-            self._save()
-
-    def _save(self) -> None:
-        tmp = self.index_path.with_name("index.json.tmp")
-        tmp.write_text(json.dumps(self.index))
-        os.replace(tmp, self.index_path)
-        used = {e["path"] for e in self.index.values()}
-        for f in self.audio_dir.iterdir():  # drop audio no card refers to any more
-            if f.name not in used and not f.name.endswith(".part"):
-                f.unlink(missing_ok=True)
+    def _update(self, uid: str, entry: dict | None) -> None:
+        """Set (or, with None, remove) a card's entry, save the index and drop audio nothing uses."""
+        with self._lock:
+            if entry is None:
+                if self.index.pop(uid, None) is None:
+                    return
+            else:
+                self.index[uid] = entry
+            tmp = self.index_path.with_name("index.json.tmp")
+            tmp.write_text(json.dumps(self.index))
+            os.replace(tmp, self.index_path)
+            used = {e["path"] for e in self.index.values()}
+            for f in self.audio_dir.iterdir():
+                if f.name not in used and not f.name.endswith(".part"):
+                    f.unlink(missing_ok=True)

@@ -34,16 +34,24 @@ class MpvPlayer:
     def resume(self) -> None:
         self.command("set_property", "pause", False)
 
+    @property
+    def running(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
     def stop(self) -> None:
-        if self.proc and self.proc.poll() is None:  # never start mpv just to stop it
+        if self.running:  # never start mpv just to stop it
             self.command("stop")
 
     def position(self) -> float | None:
+        if not self.running:
+            return None
         reply = self.command("get_property", "time-pos")
         return reply.get("data") if reply.get("error") == "success" else None
 
     def is_idle(self) -> bool:
         """True when nothing is loaded (a track finished or was stopped)."""
+        if not self.running:
+            return True
         return self.command("get_property", "idle-active").get("data") is True
 
     def close(self) -> None:
